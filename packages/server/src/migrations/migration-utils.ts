@@ -4,8 +4,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Pool, PoolClient } from 'pg';
 import { getConfig } from '../config/loader';
+import { MedplumShardConfig } from '../config/types';
 import { DatabaseMode, getDatabasePool } from '../database';
-import { getSystemRepo, Repository } from '../fhir/repo';
+import { getShardSystemRepo, Repository } from '../fhir/repo';
 import { globalLogger } from '../logger';
 import { getPostDeployVersion } from '../migration-sql';
 import { getServerVersion } from '../util/version';
@@ -166,7 +167,7 @@ export async function queuePostDeployMigration(systemRepo: Repository, version: 
   // picked up before the transaction was committed.
   // globalLogger.info('Adding post-deploy migration job', { version, asyncJob: getReferenceString(asyncJob) });
   const jobData = migration.prepareJobData(asyncJob);
-  const result = await addPostDeployMigrationJobData(jobData);
+  const result = await addPostDeployMigrationJobData(systemRepo, jobData);
   if (!result) {
     globalLogger.error('Unable to add post-deploy migration job', {
       version,
@@ -190,10 +191,14 @@ export async function withLongRunningDatabaseClient<TResult>(
   }
 }
 
-export async function maybeAutoRunPendingPostDeployMigration(): Promise<WithId<AsyncJob> | undefined> {
-  const config = getConfig();
-  const isDisabled = config.database.runMigrations === false || config.database.disableRunPostDeployMigrations;
-  const pendingPostDeployMigration = await getPendingPostDeployMigration(getDatabasePool(DatabaseMode.WRITER));
+export async function maybeAutoRunPendingPostDeployMigration(
+  shardConfig: MedplumShardConfig
+): Promise<WithId<AsyncJob> | undefined> {
+  const isDisabled =
+    shardConfig.database.runMigrations === false || shardConfig.database.disableRunPostDeployMigrations;
+  const pendingPostDeployMigration = await getPendingPostDeployMigration(
+    getDatabasePool(DatabaseMode.WRITER, shardConfig.name)
+  );
 
   if (!isDisabled && pendingPostDeployMigration === MigrationVersion.UNKNOWN) {
     //throwing here seems extreme since it stops the server from starting
@@ -208,14 +213,18 @@ export async function maybeAutoRunPendingPostDeployMigration(): Promise<WithId<A
 
   if (isDisabled) {
     globalLogger.info('Not auto-queueing pending post-deploy migration because auto-run is disabled', {
+      shard: shardConfig.name,
       version: `v${pendingPostDeployMigration}`,
     });
     return undefined;
   }
 
-  const systemRepo = getSystemRepo();
-  globalLogger.debug('Auto-queueing pending post-deploy migration', { version: `v${pendingPostDeployMigration}` });
-  return queuePostDeployMigration(systemRepo, pendingPostDeployMigration);
+  const shardSystemRepo = getShardSystemRepo(shardConfig.name);
+  globalLogger.debug('Auto-queueing pending post-deploy migration', {
+    shard: shardConfig.name,
+    version: `v${pendingPostDeployMigration}`,
+  });
+  return queuePostDeployMigration(shardSystemRepo, pendingPostDeployMigration);
 }
 
 /**
@@ -224,10 +233,12 @@ export async function maybeAutoRunPendingPostDeployMigration(): Promise<WithId<A
  * If pending post-deploy migrations were not assessed due to `config.runMigrations` being false,
  * this function throws
  *
+ * @param shardName - The name of the shard to run the migration on.
  * @param requestedDataVersion - The data version requested to run.
  * @returns An `AsyncJob` if migration is started or already running, otherwise returns `undefined` if no migration to run.
  */
 export async function maybeStartPostDeployMigration(
+  shardName: string,
   requestedDataVersion?: number
 ): Promise<WithId<AsyncJob> | undefined> {
   // If schema migrations didn't run, we should not attempt to run data migrations
@@ -276,6 +287,6 @@ export async function maybeStartPostDeployMigration(
     return undefined;
   }
 
-  const systemRepo = getSystemRepo();
-  return queuePostDeployMigration(systemRepo, pendingPostDeployMigration);
+  const shardSystemRepo = getShardSystemRepo(shardName);
+  return queuePostDeployMigration(shardSystemRepo, pendingPostDeployMigration);
 }
