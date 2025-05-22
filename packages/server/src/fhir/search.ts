@@ -47,6 +47,7 @@ import {
 } from '@medplum/fhirtypes';
 import { getConfig } from '../config/loader';
 import { DatabaseMode } from '../database';
+import { globalLogger } from '../logger';
 import { escapeUnicode } from '../migrations/migrate-utils';
 import { deriveIdentifierSearchParameter } from './lookups/util';
 import { Repository } from './repo';
@@ -1809,7 +1810,18 @@ function getCanonicalUrl(resource: Resource): string | undefined {
   return (resource as Resource & { url?: string }).url;
 }
 
+let didLogging = false;
+
 export function readFromTokenColumns(repo: Repository): typeof TokenColumnsFeature.read {
+  if (!didLogging) {
+    globalLogger.debug('TokenColumnsFeature.read', { default: TokenColumnsFeature.read });
+    didLogging = true;
+  }
+
+  if (process.env['READ_FROM_TOKEN_COLUMNS']) {
+    return TokenColumnsFeature.read;
+  }
+
   const project = repo.currentProject();
   const maybeSystemSetting = project?.systemSetting?.find((s) => s.name === 'searchTokenColumns');
 

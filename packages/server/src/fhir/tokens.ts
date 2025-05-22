@@ -10,9 +10,19 @@ import {
 } from '@medplum/core';
 import { CodeableConcept, Coding, ContactPoint, Identifier, Resource, SearchParameter } from '@medplum/fhirtypes';
 
+let readFromTokenColumnsDefault: (typeof TokenColumnsFeature)['read'];
+if (
+  process.env['READ_FROM_TOKEN_COLUMNS'] === 'column-per-code' ||
+  process.env['READ_FROM_TOKEN_COLUMNS'] === 'unified-tokens-column'
+) {
+  readFromTokenColumnsDefault = process.env['READ_FROM_TOKEN_COLUMNS'];
+} else {
+  readFromTokenColumnsDefault = false;
+}
+
 export const TokenColumnsFeature: { write: boolean; read: false | 'unified-tokens-column' | 'column-per-code' } = {
   write: true,
-  read: false,
+  read: readFromTokenColumnsDefault,
 };
 
 export interface Token {
