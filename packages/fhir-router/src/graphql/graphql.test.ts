@@ -1334,7 +1334,9 @@ describe('GraphQL', () => {
     const fhirRouter = new FhirRouter();
     const res = await graphqlHandler(request, repo, fhirRouter);
     // GraphQL validation happens before our resolver, so we get a validation error in the OperationOutcome
-    expect(res[0]?.issue?.[0]?.details?.text).toMatch(/Field "PatientPatch" argument "patch" of type "\[PatchOperationInput!\]!" is required/);
+    expect(res[0]?.issue?.[0]?.details?.text).toMatch(
+      /Field "PatientPatch" argument "patch" of type "\[PatchOperationInput!\]!" is required/
+    );
   });
 
   test('Invalid Patch Operations', async () => {
@@ -1356,6 +1358,8 @@ describe('GraphQL', () => {
     const fhirRouter = new FhirRouter();
     const res = await graphqlHandler(request, repo, fhirRouter);
     // GraphQL type validation catches this before our resolver
-    expect(res[0]?.issue?.[0]?.details?.text).toMatch(/Expected value of type "\[PatchOperationInput!\]!", found "not-an-array"/);
+    expect(res[0]?.issue?.[0]?.details?.text).toMatch(
+      /Expected value of type "\[PatchOperationInput!\]!", found "not-an-array"/
+    );
   });
 });
