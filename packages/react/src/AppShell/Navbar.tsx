@@ -1,12 +1,13 @@
-import { Button, AppShell as MantineAppShell, ScrollArea, Space, Text } from '@mantine/core';
+import { Button, AppShell as MantineAppShell, ScrollArea, Space, Text, Tooltip } from '@mantine/core';
 import { useMedplumNavigate } from '@medplum/react-hooks';
 import { IconPlus } from '@tabler/icons-react';
 import cx from 'clsx';
-import { Fragment, JSX, MouseEventHandler, ReactNode, SyntheticEvent, useState } from 'react';
+import { Fragment, JSX, MouseEventHandler, SyntheticEvent, useState } from 'react';
 import { BookmarkDialog } from '../BookmarkDialog/BookmarkDialog';
-import { MedplumLink } from '../MedplumLink/MedplumLink';
 import { ResourceTypeInput } from '../ResourceTypeInput/ResourceTypeInput';
 import classes from './Navbar.module.css';
+
+const DEFAULT_WIDTH = 300;
 
 export interface NavbarLink {
   readonly icon?: JSX.Element;
@@ -26,6 +27,8 @@ export interface NavbarProps {
   readonly closeNavbar: () => void;
   readonly displayAddBookmark?: boolean;
   readonly resourceTypeSearchDisabled?: boolean;
+  readonly opened?: boolean;
+  readonly width?: number;
 }
 
 export function Navbar(props: NavbarProps): JSX.Element {
@@ -48,35 +51,47 @@ export function Navbar(props: NavbarProps): JSX.Element {
     }
   }
 
+  const opened = props.opened ?? true;
+  const width = props.width ?? DEFAULT_WIDTH;
+
   return (
     <>
-      <MantineAppShell.Navbar>
-        <ScrollArea p="xs">
-          {!props.resourceTypeSearchDisabled && (
-            <MantineAppShell.Section mb="sm">
-              <ResourceTypeInput
-                key={window.location.pathname}
-                name="resourceType"
-                placeholder="Resource Type"
-                maxValues={0}
-                onChange={(newValue) => navigateResourceType(newValue)}
-              />
-            </MantineAppShell.Section>
-          )}
+      <MantineAppShell.Navbar
+        p={0}
+        style={{
+          transitionProperty: 'width',
+        }}
+      >
+        <ScrollArea p="xs" pr="md">
+          {!props.resourceTypeSearchDisabled &&
+            (opened ? (
+              <MantineAppShell.Section mb="sm">
+                <ResourceTypeInput
+                  key={window.location.pathname}
+                  name="resourceType"
+                  placeholder="Resource Type"
+                  maxValues={0}
+                  onChange={(newValue) => navigateResourceType(newValue)}
+                />
+              </MantineAppShell.Section>
+            ) : (
+              <Space h="lg" />
+            ))}
           <MantineAppShell.Section grow>
             {props.menus?.map((menu) => (
               <Fragment key={`menu-${menu.title}`}>
-                <Text className={classes.menuTitle}>{menu.title}</Text>
+                {opened ? <Text className={classes.menuTitle}>{menu.title}</Text> : <Space h="lg" />}
                 {menu.links?.map((link) => (
                   <NavbarLink
                     key={link.href}
                     to={link.href}
                     active={link.href === activeLink?.href}
                     onClick={(e) => onLinkClick(e, link.href)}
-                  >
-                    <NavLinkIcon icon={link.icon} />
-                    <span>{link.label}</span>
-                  </NavbarLink>
+                    icon={link.icon}
+                    label={link.label ?? ''}
+                    opened={opened}
+                    width={width}
+                  />
                 ))}
               </Fragment>
             ))}
@@ -111,30 +126,46 @@ interface NavbarLinkProps {
   readonly to: string;
   readonly active: boolean;
   readonly onClick: MouseEventHandler;
-  readonly children: ReactNode;
+  readonly icon?: JSX.Element;
+  readonly label: string;
+  readonly opened?: boolean;
+  readonly width: number;
 }
 
 function NavbarLink(props: NavbarLinkProps): JSX.Element {
+  const opened = props.opened ?? true;
   return (
-    <MedplumLink
-      onClick={props.onClick}
-      to={props.to}
+    <a
       className={cx(classes.link, { [classes.linkActive]: props.active })}
+      style={{
+        width: props.width - 36,
+        transitionProperty: 'all',
+        transitionDuration: '0.2s',
+        textOverflow: 'ellipsis',
+      }}
+      data-active={props.active}
+      href={props.to}
+      key={props.to}
+      onClick={(e) => {
+        e.preventDefault();
+        props.onClick(e);
+      }}
     >
-      {props.children}
-    </MedplumLink>
+      <Tooltip label={props.label}>
+        <div
+          style={{
+            width: 32,
+            height: 18,
+            padding: 0,
+            margin: '0 8 0 0',
+          }}
+        >
+          {props.icon}
+        </div>
+      </Tooltip>
+      {opened && <span>{props.label}</span>}
+    </a>
   );
-}
-
-interface NavLinkIconProps {
-  readonly icon?: JSX.Element;
-}
-
-function NavLinkIcon(props: NavLinkIconProps): JSX.Element {
-  if (props.icon) {
-    return props.icon;
-  }
-  return <Space w={30} />;
 }
 
 /**

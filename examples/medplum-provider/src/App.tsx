@@ -1,13 +1,5 @@
 import { ProfileResource, getReferenceString } from '@medplum/core';
-import {
-  AppShell,
-  Loading,
-  Logo,
-  NotificationIcon,
-  useMedplum,
-  useMedplumNavigate,
-  useMedplumProfile,
-} from '@medplum/react';
+import { AppShell, Loading, Logo, NavbarMenu, NotificationIcon, useMedplum, useMedplumProfile } from '@medplum/react';
 import {
   IconClipboardCheck,
   IconMail,
@@ -18,7 +10,6 @@ import {
 } from '@tabler/icons-react';
 import { JSX, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router';
-import { DoseSpotIcon } from './components/DoseSpotIcon';
 import { hasDoseSpotIdentifier } from './components/utils';
 import './index.css';
 import { HomePage } from './pages/HomePage';
@@ -28,6 +19,7 @@ import { SearchPage } from './pages/SearchPage';
 import { SignInPage } from './pages/SignInPage';
 import { EncounterChart } from './pages/encounter/EncounterChart';
 import { EncounterModal } from './pages/encounter/EncounterModal';
+import { MessagesPage } from './pages/messages/MessagesPage';
 import { CommunicationTab } from './pages/patient/CommunicationTab';
 import { DoseSpotTab } from './pages/patient/DoseSpotTab';
 import { EditTab } from './pages/patient/EditTab';
@@ -43,12 +35,10 @@ import { ResourceEditPage } from './pages/resource/ResourceEditPage';
 import { ResourceHistoryPage } from './pages/resource/ResourceHistoryPage';
 import { ResourcePage } from './pages/resource/ResourcePage';
 import { TaskDetails } from './pages/tasks/TaskDetails';
-import { MessagesPage } from './pages/messages/MessagesPage';
 
 export function App(): JSX.Element | null {
   const medplum = useMedplum();
   const profile = useMedplumProfile();
-  const navigate = useMedplumNavigate();
 
   if (medplum.isLoading()) {
     return null;
@@ -57,64 +47,48 @@ export function App(): JSX.Element | null {
   const membership = medplum.getProjectMembership();
   const hasDoseSpot = hasDoseSpotIdentifier(membership);
 
+  let menus: NavbarMenu[] | undefined = undefined;
+  if (profile) {
+    menus = [
+      {
+        title: 'Favorites',
+        links: [
+          { icon: <IconUser />, label: 'Patients', href: '/' },
+          { icon: <IconTimeDuration0 />, label: 'Schedule', href: '/schedule' },
+          { icon: <IconMail />, label: 'Messages', href: '/messages' },
+          { icon: <IconPencil />, label: 'New Patient', href: '/onboarding' },
+          { icon: <IconTransformPoint />, label: 'Integrations', href: '/integrations' },
+          {
+            icon: (
+              <NotificationIcon
+                resourceType="Communication"
+                countCriteria={`recipient=${getReferenceString(profile as ProfileResource)}&status:not=completed&_summary=count`}
+                subscriptionCriteria={`Communication?recipient=${getReferenceString(profile as ProfileResource)}`}
+                iconComponent={<IconMail />}
+              />
+            ),
+            label: 'Messages',
+            href: `/Communication?recipient=${getReferenceString(profile as ProfileResource)}&status:not=completed&_fields=sender,recipient,subject,status,_lastUpdated`,
+          },
+          {
+            icon: (
+              <NotificationIcon
+                resourceType="Task"
+                countCriteria={`owner=${getReferenceString(profile as ProfileResource)}&status:not=completed&_summary=count`}
+                subscriptionCriteria={`Task?owner=${getReferenceString(profile as ProfileResource)}`}
+                iconComponent={<IconClipboardCheck />}
+              />
+            ),
+            label: 'Tasks',
+            href: `/Communication?recipient=${getReferenceString(profile as ProfileResource)}&status:not=completed&_fields=sender,recipient,subject,status,_lastUpdated`,
+          },
+        ],
+      },
+    ];
+  }
+
   return (
-    <AppShell
-      logo={<Logo size={24} />}
-      menus={[
-        {
-          title: 'Charts',
-          links: [{ icon: <IconUser />, label: 'Patients', href: '/' }],
-        },
-        {
-          title: 'Scheduling',
-          links: [{ icon: <IconTimeDuration0 />, label: 'Schedule', href: '/schedule' }],
-        },
-        {
-          title: 'Communication',
-          links: [{ icon: <IconMail />, label: 'Messages', href: '/messages' }],
-        },
-        {
-          title: 'Onboarding',
-          links: [{ icon: <IconPencil />, label: 'New Patient', href: '/onboarding' }],
-        },
-        {
-          title: 'Integrations',
-          links: [{ icon: <IconTransformPoint />, label: 'Integrations', href: '/integrations' }],
-        },
-      ]}
-      resourceTypeSearchDisabled={true}
-      notifications={
-        profile && (
-          <>
-            <NotificationIcon
-              label="Mail"
-              resourceType="Communication"
-              countCriteria={`recipient=${getReferenceString(profile as ProfileResource)}&status:not=completed&_summary=count`}
-              subscriptionCriteria={`Communication?recipient=${getReferenceString(profile as ProfileResource)}`}
-              iconComponent={<IconMail />}
-              onClick={() =>
-                navigate(
-                  `/Communication?recipient=${getReferenceString(profile as ProfileResource)}&status:not=completed&_fields=sender,recipient,subject,status,_lastUpdated`
-                )
-              }
-            />
-            <NotificationIcon
-              label="Tasks"
-              resourceType="Task"
-              countCriteria={`owner=${getReferenceString(profile as ProfileResource)}&status:not=completed&_summary=count`}
-              subscriptionCriteria={`Task?owner=${getReferenceString(profile as ProfileResource)}`}
-              iconComponent={<IconClipboardCheck />}
-              onClick={() =>
-                navigate(
-                  `/Task?owner=${getReferenceString(profile as ProfileResource)}&status:not=completed&_fields=subject,code,description,status,_lastUpdated`
-                )
-              }
-            />
-            {hasDoseSpot && <DoseSpotIcon />}
-          </>
-        )
-      }
-    >
+    <AppShell logo={<Logo size={24} />} menus={menus} resourceTypeSearchDisabled={true}>
       <Suspense fallback={<Loading />}>
         <Routes>
           {profile ? (

@@ -8,6 +8,9 @@ import classes from './AppShell.module.css';
 import { Header } from './Header';
 import { Navbar, NavbarMenu } from './Navbar';
 
+const OPEN_WIDTH = 300;
+const CLOSED_WIDTH = 75;
+
 export interface AppShellProps {
   readonly logo: ReactNode;
   readonly pathname?: string;
@@ -51,16 +54,14 @@ export function AppShell(props: AppShellProps): JSX.Element {
     return <Loading />;
   }
 
+  const width = navbarOpen ? OPEN_WIDTH : CLOSED_WIDTH;
+
   return (
     <MantineAppShell
       header={{ height: 60 }}
       navbar={{
-        width: 250,
+        width,
         breakpoint: 'sm',
-        collapsed: {
-          desktop: !profile || !navbarOpen,
-          mobile: !profile || !navbarOpen,
-        },
       }}
       padding={0}
     >
@@ -75,7 +76,7 @@ export function AppShell(props: AppShellProps): JSX.Element {
           notifications={props.notifications}
         />
       )}
-      {profile && navbarOpen ? (
+      {profile ? (
         <Navbar
           pathname={props.pathname}
           searchParams={props.searchParams}
@@ -83,6 +84,8 @@ export function AppShell(props: AppShellProps): JSX.Element {
           closeNavbar={closeNavbar}
           displayAddBookmark={props.displayAddBookmark}
           resourceTypeSearchDisabled={props.resourceTypeSearchDisabled}
+          opened={navbarOpen}
+          width={width}
         />
       ) : undefined}
       <MantineAppShell.Main className={classes.main}>
