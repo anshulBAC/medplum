@@ -37,19 +37,17 @@ export const Operator = {
       sql.appendParameters(parameter, true);
     }
   },
-  LIKE: (sql: SqlBuilder, column: Column, parameter: any, _paramType?: string) => {
+  LOWER_LIKE: (sql: SqlBuilder, column: Column, parameter: any, _paramType?: string) => {
     sql.append('LOWER(');
     sql.appendColumn(column);
     sql.append(')');
     sql.append(' LIKE ');
     sql.param((parameter as string).toLowerCase());
   },
-  NOT_LIKE: (sql: SqlBuilder, column: Column, parameter: any, _paramType?: string) => {
-    sql.append('LOWER(');
+  ILIKE: (sql: SqlBuilder, column: Column, parameter: any, _paramType?: string) => {
     sql.appendColumn(column);
-    sql.append(')');
-    sql.append(' NOT LIKE ');
-    sql.param((parameter as string).toLowerCase());
+    sql.append(' ILIKE ');
+    sql.param(parameter as string);
   },
   '<': simpleBinaryOperator('<'),
   '<=': simpleBinaryOperator('<='),
@@ -58,39 +56,42 @@ export const Operator = {
   IN: simpleBinaryOperator('IN'),
   /*
     Why do both of these exist? Mainly for consideration when negating the condition:
-    Negating ARRAY_CONTAINS_AND_IS_NOT_NULL includes records where the column is NULL.
-    Negating ARRAY_CONTAINS does NOT include records where the column is NULL.
+    Negating ARRAY_OVERLAPS_AND_IS_NOT_NULL includes records where the column is NULL.
+    Negating ARRAY_OVERLAPS does NOT include records where the column is NULL.
   */
-  ARRAY_CONTAINS: (sql: SqlBuilder, column: Column, parameter: any, paramType?: string) => {
+  ARRAY_OVERLAPS: (sql: SqlBuilder, column: Column, parameter: any, paramType?: string) => {
     sql.appendColumn(column);
-    sql.append(' && ARRAY[');
+    // && is the overlap operator, @> is the contains operator
+    // When `parameter` is a single value, @> is functionally equivalent to && and
+    // can lead to better query plans
+    if (sql.parameterCount(parameter) > 1) {
+      sql.append(' && ARRAY[');
+    } else {
+      sql.append(' @> ARRAY[');
+    }
     sql.appendParameters(parameter, false);
     sql.append(']');
     if (paramType) {
       sql.append('::' + paramType);
     }
   },
-  ARRAY_CONTAINS_AND_IS_NOT_NULL: (sql: SqlBuilder, column: Column, parameter: any, paramType?: string) => {
+  ARRAY_OVERLAPS_AND_IS_NOT_NULL: (sql: SqlBuilder, column: Column, parameter: any, paramType?: string) => {
     sql.append('(');
     sql.appendColumn(column);
     sql.append(' IS NOT NULL AND ');
     sql.appendColumn(column);
-    sql.append(' && ARRAY[');
+    // && is the overlap operator, @> is the contains operator
+    // When `parameter` is a single value, @> is functionally equivalent to && and
+    // can lead to better query plans
+    if (sql.parameterCount(parameter) > 1) {
+      sql.append(' && ARRAY[');
+    } else {
+      sql.append(' @> ARRAY[');
+    }
     sql.appendParameters(parameter, false);
     sql.append(']');
     if (paramType) {
       sql.append('::' + paramType);
-    }
-    sql.append(')');
-  },
-  ARRAY_CONTAINS_SUBQUERY: (sql: SqlBuilder, column: Column, expression: Expression, expressionType?: string) => {
-    sql.append('(');
-    sql.appendColumn(column);
-    sql.append(' && (');
-    sql.appendExpression(expression);
-    sql.append(')');
-    if (expressionType) {
-      sql.append('::' + expressionType);
     }
     sql.append(')');
   },
@@ -100,6 +101,18 @@ export const Operator = {
     sql.append(')');
     sql.append(' ~* ');
     sql.appendParameters(parameter, false);
+  },
+  ARRAY_EMPTY: (sql: SqlBuilder, column: Column, _parameter: any, paramType?: string) => {
+    sql.appendColumn(column);
+    sql.append(' = ARRAY[]');
+    if (paramType) {
+      sql.append('::' + paramType);
+    }
+  },
+  ARRAY_NOT_EMPTY: (sql: SqlBuilder, column: Column, _parameter: any, _paramType?: string) => {
+    sql.append('array_length(');
+    sql.appendColumn(column);
+    sql.append(', 1) > 0');
   },
   TSVECTOR_SIMPLE: (sql: SqlBuilder, column: Column, parameter: any, _paramType?: string) => {
     const query = formatTsquery(parameter);
@@ -196,7 +209,7 @@ export interface Expression {
 
 export class Column implements Expression {
   readonly tableName: string | undefined;
-  readonly columnName: string;
+  columnName: string;
   readonly raw?: boolean;
   readonly alias?: string;
 
@@ -241,11 +254,14 @@ export class Negation implements Expression {
 export class Condition implements Expression {
   readonly column: Column;
   readonly operator: keyof typeof Operator;
-  readonly parameter: any;
+  parameter: any;
   readonly parameterType?: string;
 
   constructor(column: Column | string, operator: keyof typeof Operator, parameter: any, parameterType?: string) {
-    if ((operator === 'ARRAY_CONTAINS_AND_IS_NOT_NULL' || operator === 'ARRAY_CONTAINS') && !parameterType) {
+    if (
+      (operator === 'ARRAY_OVERLAPS_AND_IS_NOT_NULL' || operator === 'ARRAY_OVERLAPS' || operator === 'ARRAY_EMPTY') &&
+      !parameterType
+    ) {
       throw new Error(`${operator} requires paramType`);
     }
 
@@ -345,6 +361,29 @@ export class SqlFunction implements Expression {
       }
     }
     sql.append(')');
+  }
+}
+
+export class UnionAllBuilder {
+  private queryCount: number = 0;
+  sql: SqlBuilder;
+
+  constructor() {
+    this.sql = new SqlBuilder();
+  }
+
+  add(query: SelectQuery): void {
+    if (this.queryCount > 0) {
+      this.sql.append(' UNION ALL ');
+    }
+    this.sql.append('(');
+    this.sql.appendExpression(query);
+    this.sql.append(')');
+    this.queryCount++;
+  }
+
+  async execute(conn: Pool | PoolClient): Promise<any[]> {
+    return (await this.sql.execute(conn)).rows;
   }
 }
 
@@ -452,6 +491,16 @@ export class SqlBuilder {
     return this;
   }
 
+  parameterCount(value: any): number {
+    if (Array.isArray(value)) {
+      return value.length;
+    }
+    if (value instanceof Set) {
+      return value.size;
+    }
+    return 1;
+  }
+
   appendParameters(parameter: any, addParens: boolean): void {
     if (Array.isArray(parameter) || parameter instanceof Set) {
       if (addParens) {
@@ -535,8 +584,7 @@ export function normalizeDatabaseError(err: any): OperationOutcomeError {
 export abstract class BaseQuery {
   readonly tableName: string;
   readonly predicate: Conjunction;
-  explain = false;
-  analyzeBuffers = false;
+  explain: boolean | string[] = false;
   readonly alias?: string;
 
   constructor(tableName: string, alias?: string) {
@@ -656,8 +704,10 @@ export class SelectQuery extends BaseQuery implements Expression {
   buildSql(sql: SqlBuilder): void {
     if (this.explain) {
       sql.append('EXPLAIN ');
-      if (this.analyzeBuffers) {
-        sql.append('(ANALYZE, BUFFERS) ');
+      if (Array.isArray(this.explain)) {
+        sql.append('(');
+        sql.append(this.explain.join(', '));
+        sql.append(')');
       }
     }
     if (this.with) {

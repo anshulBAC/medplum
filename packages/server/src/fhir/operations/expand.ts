@@ -1,4 +1,4 @@
-import { allOk, badRequest, OperationOutcomeError } from '@medplum/core';
+import { allOk, badRequest, OperationOutcomeError, WithId } from '@medplum/core';
 import { FhirRequest, FhirResponse } from '@medplum/fhir-router';
 import {
   CodeSystem,
@@ -146,7 +146,7 @@ export async function expandValueSet(valueSet: ValueSet, params: ValueSetExpandP
 async function computeExpansion(
   valueSet: ValueSet,
   params: ValueSetExpandParameters,
-  terminologyResources: Record<string, CodeSystem | ValueSet> = Object.create(null)
+  terminologyResources: Record<string, WithId<CodeSystem> | WithId<ValueSet>> = Object.create(null)
 ): Promise<ValueSetExpansionContains[]> {
   const preExpansion = valueSet.expansion;
   if (
@@ -199,7 +199,7 @@ async function computeExpansion(
     }
 
     const codeSystem =
-      (terminologyResources[include.system] as CodeSystem) ??
+      (terminologyResources[include.system] as WithId<CodeSystem>) ??
       (await findTerminologyResource('CodeSystem', include.system));
     terminologyResources[include.system] = codeSystem;
 
@@ -323,7 +323,7 @@ function addExpansionFilters(query: SelectQuery, params: ValueSetExpandParameter
           new Conjunction(
             params.filter
               .split(/\s+/g)
-              .map((filter) => new Condition('display', 'LIKE', `%${escapeLikeString(filter)}%`))
+              .map((filter) => new Condition('display', 'LOWER_LIKE', `%${escapeLikeString(filter)}%`))
           ),
         ])
       )

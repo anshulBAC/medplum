@@ -1,4 +1,5 @@
 import {
+  AccessPolicyInteraction,
   badRequest,
   DEFAULT_MAX_SEARCH_COUNT,
   DEFAULT_SEARCH_COUNT,
@@ -47,6 +48,7 @@ import {
 import { getConfig } from '../config/loader';
 import { DatabaseMode } from '../database';
 import { deriveIdentifierSearchParameter } from './lookups/util';
+import { clamp } from './operations/utils/parameters';
 import { Repository } from './repo';
 import { getFullUrl } from './response';
 import { ColumnSearchParameterImplementation, getSearchParameterImplementation } from './searchparameter';
@@ -60,16 +62,14 @@ import {
   escapeLikeString,
   Expression,
   Negation,
-  Parameter,
   periodToRangeString,
   SelectQuery,
   Operator as SQL,
   SqlFunction,
   Union,
-  ValuesQuery,
+  UnionAllBuilder,
 } from './sql';
 import { addTokenColumnsOrderBy, buildTokenColumnsSearchFilter } from './token-column';
-import { isLegacyTokenColumnSearchParameter, TokenColumnsFeature } from './tokens';
 
 /**
  * Defines the maximum number of resources returned in a single search result.
@@ -147,11 +147,10 @@ export async function searchByReferenceImpl<T extends Resource>(
   referenceValues: string[]
 ): Promise<Record<string, WithId<T>[]>> {
   validateSearchResourceTypes(repo, searchRequest);
-  applyCountAndOffsetLimits(searchRequest);
 
-  const referencesTableName = 'references';
-  const referencesColumnName = 'ref';
-  const referenceColumn = new Column(referencesTableName, referencesColumnName);
+  // Hold on to references to parts of the SelectQuery that need to be modified per reference value
+  const referenceConditions: Condition[] = [];
+  const referenceColumns: Column[] = [];
 
   const searchQuery = getSelectQueryForSearch(repo, searchRequest, {
     addColumns: true,
@@ -169,24 +168,33 @@ export async function searchByReferenceImpl<T extends Resource>(
           badRequest(`Invalid reference search parameter on ${resourceType}: ${referenceField}`)
         );
       }
-      builder.whereExpr(buildReferenceSearchFilter(builder.tableName, impl, Operator.EQUALS, referenceColumn));
+      const expr = buildReferenceEqualsCondition(builder.tableName, impl, referenceValues[0]);
+      referenceConditions.push(expr);
+      builder.whereExpr(expr);
+
+      const column = new Column(undefined, `'${referenceValues[0]}'`, true, 'ref');
+      referenceColumns.push(column);
+      builder.column(column);
     },
   });
-  const builder = new SelectQuery(
-    referencesTableName,
-    new ValuesQuery(
-      referencesTableName,
-      [referencesColumnName],
-      referenceValues.map((r) => [r])
-    )
-  );
-  builder.join('INNER JOIN LATERAL', searchQuery, 'results', new Parameter('true'));
-  builder.column(new Column('results', 'id')).column(new Column('results', 'content')).column(referenceColumn);
+
+  const unionAllBuilder = new UnionAllBuilder();
+  for (const refValue of referenceValues) {
+    // Update each condition with the current reference value
+    for (const cond of referenceConditions) {
+      cond.parameter = refValue;
+    }
+    // Update each column with the current reference value literal
+    for (const column of referenceColumns) {
+      column.columnName = `'${refValue}'`;
+    }
+    unionAllBuilder.add(searchQuery);
+  }
 
   const rows: {
     content: string;
     ref: string;
-  }[] = await builder.execute(repo.getDatabaseClient(DatabaseMode.READER));
+  }[] = await unionAllBuilder.execute(repo.getDatabaseClient(DatabaseMode.READER));
 
   const results: Record<string, WithId<T>[]> = Object.create(null);
   for (const ref of referenceValues) {
@@ -249,7 +257,7 @@ function validateSearchResourceType(repo: Repository, resourceType: ResourceType
     throw new OperationOutcomeError(badRequest('Cannot search on Binary resource type'));
   }
 
-  if (!repo.canReadResourceType(resourceType)) {
+  if (!repo.supportsInteraction(AccessPolicyInteraction.SEARCH, resourceType)) {
     throw new OperationOutcomeError(forbidden);
   }
 }
@@ -258,11 +266,14 @@ interface GetSelectQueryForSearchOptions extends GetBaseSelectQueryOptions {
   /** Number added to `searchRequest.count` when specifying the query LIMIT. Default is 1 */
   limitModifier?: number;
 }
-function getSelectQueryForSearch<T extends Resource>(
+
+export function getSelectQueryForSearch<T extends Resource>(
   repo: Repository,
-  searchRequest: SearchRequestWithCountAndOffset<T>,
+  searchRequest: SearchRequest<T>,
   options?: GetSelectQueryForSearchOptions
 ): SelectQuery {
+  applyCountAndOffsetLimits(searchRequest);
+
   const builder = getBaseSelectQuery(repo, searchRequest, options);
   addSortRules(repo, builder, searchRequest);
   const count = searchRequest.count;
@@ -353,7 +364,7 @@ function getBaseSelectQuery(
     }
     builder = new SelectQuery('combined', new Union(...queries));
     if (opts?.addColumns ?? true) {
-      builder.column('id').column('lastUpdated').column('content');
+      builder.raw('*');
     }
   } else {
     builder = getBaseSelectQueryForResourceType(repo, searchRequest.resourceType, searchRequest, opts);
@@ -777,8 +788,9 @@ function getSearchUrl(searchRequest: SearchRequest): string {
  * @param rowCount - The number of matching results if found.
  * @returns The total number of matching results.
  */
-async function getCount(repo: Repository, searchRequest: SearchRequest, rowCount: number | undefined): Promise<number> {
-  const estimateCount = await getEstimateCount(repo, searchRequest, rowCount);
+async function getCount(repo: Repository, searchRequest: SearchRequest, rowCount?: number): Promise<number> {
+  let estimateCount = await getEstimateCount(repo, searchRequest);
+  estimateCount = clampEstimateCount(searchRequest, estimateCount, rowCount);
   if (estimateCount < getConfig().accurateCountThreshold) {
     return getAccurateCount(repo, searchRequest);
   }
@@ -811,45 +823,33 @@ async function getAccurateCount(repo: Repository, searchRequest: SearchRequest):
  * This uses the estimated row count technique as described here: https://wiki.postgresql.org/wiki/Count_estimate
  * @param repo - The repository.
  * @param searchRequest - The search request.
- * @param rowCount - The number of matching results if found.
  * @returns The total number of matching results.
  */
-async function getEstimateCount(
-  repo: Repository,
-  searchRequest: SearchRequest,
-  rowCount: number | undefined
-): Promise<number> {
+async function getEstimateCount(repo: Repository, searchRequest: SearchRequest): Promise<number> {
   const builder = getBaseSelectQuery(repo, searchRequest);
   builder.explain = true;
 
   // See: https://wiki.postgresql.org/wiki/Count_estimate
   // This parses the query plan to find the estimated number of rows.
   const rows = await builder.execute(repo.getDatabaseClient(DatabaseMode.READER));
-  let result = 0;
   for (const row of rows) {
     const queryPlan = row['QUERY PLAN'];
     const match = /rows=(\d+)/.exec(queryPlan);
     if (match) {
-      result = parseInt(match[1], 10);
-      break;
+      return parseInt(match[1], 10);
     }
   }
-
-  return clampEstimateCount(searchRequest, rowCount, result);
+  return 0;
 }
 
 /**
  * Returns a "clamped" estimate count based on the actual row count.
  * @param searchRequest - The search request.
- * @param rowCount - The number of matching results if found. Value can be up to one more than the requested count.
  * @param estimateCount - The estimated number of matching results.
+ * @param rowCount - The number of matching results if found. Value can be up to one more than the requested count.
  * @returns The clamped estimate count.
  */
-export function clampEstimateCount(
-  searchRequest: SearchRequest,
-  rowCount: number | undefined,
-  estimateCount: number
-): number {
+export function clampEstimateCount(searchRequest: SearchRequest, estimateCount: number, rowCount?: number): number {
   if (searchRequest.count === 0 || rowCount === undefined) {
     // If "count only" or rowCount is undefined, then the estimate is the best we can do
     return estimateCount;
@@ -859,7 +859,7 @@ export function clampEstimateCount(
   const startIndex = searchRequest.offset ?? 0;
   const minCount = rowCount > 0 ? startIndex + rowCount : 0;
   const maxCount = rowCount <= pageSize ? startIndex + rowCount : Number.MAX_SAFE_INTEGER;
-  return Math.max(minCount, Math.min(maxCount, estimateCount));
+  return clamp(minCount, estimateCount, maxCount);
 }
 
 /**
@@ -966,19 +966,9 @@ function buildSearchFilterExpression(
 
   const impl = getSearchParameterImplementation(resourceType, param);
 
-  if (readFromTokenColumns(repo) && impl.searchStrategy === 'token-column') {
-    // Use the token-column strategy only if the read feature flag is enabled
+  if (impl.searchStrategy === 'token-column') {
     return buildTokenColumnsSearchFilter(resourceType, table, param, filter);
-  } else if (impl.searchStrategy === 'lookup-table' || impl.searchStrategy === 'token-column') {
-    // otherwise, if it's a token-column but the read flag is not enabled, use the search param's
-    // previous lookup-table implementation
-
-    if (isLegacyTokenColumnSearchParameter(param, resourceType)) {
-      // legacy token search params should be treated as 'column' strategy; once the token-column read
-      // feature flag is enabled, this check goes away since all legacy search params will be token-column
-      const columnImpl = getSearchParameterImplementation(resourceType, param, true);
-      return buildNormalSearchFilterExpression(resourceType, table, param, columnImpl, filter);
-    }
+  } else if (impl.searchStrategy === 'lookup-table') {
     return impl.lookupTable.buildWhere(selectQuery, resourceType, table, param, filter);
   }
 
@@ -1182,9 +1172,9 @@ function buildStringFilterExpression(column: Column, operator: Operator, values:
     if (operator === Operator.EXACT) {
       return new Condition(column, '=', v);
     } else if (operator === Operator.CONTAINS) {
-      return new Condition(column, 'LIKE', `%${escapeLikeString(v)}%`);
+      return new Condition(column, 'LOWER_LIKE', `%${escapeLikeString(v)}%`);
     } else if (prefixMatchOperators.includes(operator)) {
-      return new Condition(column, 'LIKE', `${escapeLikeString(v)}%`);
+      return new Condition(column, 'LOWER_LIKE', `${escapeLikeString(v)}%`);
     } else {
       throw new OperationOutcomeError(badRequest('Unsupported string search operator: ' + operator));
     }
@@ -1286,7 +1276,7 @@ function buildReferenceSearchFilter(
   }
   let condition: Condition;
   if (impl.array) {
-    condition = new Condition(column, 'ARRAY_CONTAINS_AND_IS_NOT_NULL', values, 'TEXT[]');
+    condition = new Condition(column, 'ARRAY_OVERLAPS_AND_IS_NOT_NULL', values, 'TEXT[]');
   } else if (values instanceof Column) {
     condition = new Condition(column, '=', values);
   } else if (values.length === 1) {
@@ -1295,6 +1285,21 @@ function buildReferenceSearchFilter(
     condition = new Condition(column, 'IN', values);
   }
   return operator === Operator.NOT || operator === Operator.NOT_EQUALS ? new Negation(condition) : condition;
+}
+
+function buildReferenceEqualsCondition(
+  table: string,
+  impl: ColumnSearchParameterImplementation,
+  value: string | Column
+): Condition {
+  const column = new Column(table, impl.columnName);
+  let condition: Condition;
+  if (impl.array) {
+    condition = new Condition(column, 'ARRAY_OVERLAPS_AND_IS_NOT_NULL', [value], 'TEXT[]');
+  } else {
+    condition = new Condition(column, '=', value);
+  }
+  return condition;
 }
 
 /**
@@ -1424,15 +1429,10 @@ function addOrderByClause(
   }
 
   const impl = getSearchParameterImplementation(resourceType, param);
-  if (readFromTokenColumns(repo) && impl.searchStrategy === 'token-column') {
+  if (impl.searchStrategy === 'token-column') {
     addTokenColumnsOrderBy(builder, resourceType, sortRule, param);
-  } else if (impl.searchStrategy === 'lookup-table' || impl.searchStrategy === 'token-column') {
-    if (isLegacyTokenColumnSearchParameter(param, resourceType)) {
-      const columnImpl = getSearchParameterImplementation(resourceType, param, true);
-      builder.orderBy(columnImpl.columnName, !!sortRule.descending);
-    } else {
-      impl.lookupTable.addOrderBy(builder, resourceType, sortRule);
-    }
+  } else if (impl.searchStrategy === 'lookup-table') {
+    impl.lookupTable.addOrderBy(builder, resourceType, sortRule);
   } else {
     impl satisfies ColumnSearchParameterImplementation;
     builder.orderBy(impl.columnName, !!sortRule.descending);
@@ -1476,7 +1476,7 @@ function buildEqualityCondition(
 ): Condition {
   column = column ?? impl.columnName;
   if (impl.array) {
-    return new Condition(column, 'ARRAY_CONTAINS_AND_IS_NOT_NULL', values, impl.type + '[]');
+    return new Condition(column, 'ARRAY_OVERLAPS_AND_IS_NOT_NULL', values, impl.type + '[]');
   } else if (values.length > 1) {
     return new Condition(column, 'IN', values, impl.type);
   } else {
@@ -1763,28 +1763,4 @@ function splitChainedSearch(chain: string): string[] {
 
 function getCanonicalUrl(resource: Resource): string | undefined {
   return (resource as Resource & { url?: string }).url;
-}
-
-export function readFromTokenColumns(repo: Repository): boolean {
-  const project = repo.currentProject();
-  const maybeSystemSettingBoolean = project?.systemSetting?.find((s) => s.name === 'searchTokenColumns')?.valueBoolean;
-
-  // If the Project.systemSetting exists, return its value
-  if (maybeSystemSettingBoolean !== undefined) {
-    return maybeSystemSettingBoolean;
-  }
-
-  // If the project is undefined, it is a system repository
-  if (project === undefined) {
-    const systemRepositoryTokenReadStrategy = getConfig().systemRepositoryTokenReadStrategy;
-    // If specified, translate the config value to a boolean
-    if (systemRepositoryTokenReadStrategy === 'unified-tokens-column') {
-      return true;
-    } else if (systemRepositoryTokenReadStrategy === 'token-tables') {
-      return false;
-    }
-  }
-
-  // fallback to the global default
-  return TokenColumnsFeature.read;
 }

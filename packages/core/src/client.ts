@@ -13,6 +13,7 @@ import {
   BundleLink,
   Communication,
   Device,
+  DocumentReference,
   Encounter,
   ExtractResource,
   Identifier,
@@ -384,6 +385,13 @@ export interface MedplumRequestOptions extends RequestInit {
   disableAutoBatch?: boolean;
 }
 
+export interface PushToAgentOptions extends MedplumRequestOptions {
+  /**
+   * Time to wait before request timeout in milliseconds; defaults to `10000` (10 s)
+   */
+  waitTimeout?: number;
+}
+
 export type FetchLike = (url: string, options?: any) => Promise<any>;
 
 /**
@@ -573,6 +581,13 @@ export interface CreateMediaOptions extends CreateBinaryOptions {
    * Optional additional fields for the Media resource.
    */
   readonly additionalFields?: Partial<Media>;
+}
+
+export interface CreateDocumentReferenceOptions extends CreateBinaryOptions {
+  /**
+   * Optional additional fields for the DocumentReference resource.
+   */
+  readonly additionalFields?: Omit<Partial<DocumentReference>, 'content'>;
 }
 
 /**
@@ -1663,6 +1678,10 @@ export class MedplumClient extends TypedEventTarget<MedplumClientEventMap> {
 
     while (url) {
       const searchParams: URLSearchParams = new URL(url).searchParams;
+      if (!searchParams.has('_count')) {
+        searchParams.set('_count', '1000'); // Force maximum page size to reduce server load
+      }
+
       const bundle = await this.search(resourceType, searchParams, options);
       const nextLink: BundleLink | undefined = bundle.link?.find((link) => link.relation === 'next');
       if (!bundle.entry?.length && !nextLink) {
@@ -2814,8 +2833,9 @@ export class MedplumClient extends TypedEventTarget<MedplumClientEventMap> {
     body: any,
     contentType?: string,
     waitForResponse?: boolean,
-    options?: MedplumRequestOptions
+    options?: PushToAgentOptions
   ): Promise<any> {
+    const { waitTimeout, ...requestOptions } = options ?? {};
     return this.post(
       this.fhirUrl('Agent', resolveId(agent) as string, '$push'),
       {
@@ -2823,9 +2843,10 @@ export class MedplumClient extends TypedEventTarget<MedplumClientEventMap> {
         body,
         contentType,
         waitForResponse,
+        ...(waitTimeout !== undefined ? { waitTimeout } : undefined),
       },
       ContentType.FHIR_JSON,
-      options
+      requestOptions
     );
   }
 
@@ -3111,6 +3132,49 @@ export class MedplumClient extends TypedEventTarget<MedplumClientEventMap> {
       },
       options
     );
+  }
+
+  /**
+   * Creates a FHIR DocumentReference resource with the provided data content.
+   *
+   * @category Create
+   * @param createDocumentReferenceOptions - The document reference creation options. See `CreateDocumentReferenceOptions` for full details.
+   * @param requestOptions - Optional fetch options.
+   * @returns The new document reference resource.
+   */
+  async createDocumentReference(
+    createDocumentReferenceOptions: CreateDocumentReferenceOptions,
+    requestOptions?: MedplumRequestOptions
+  ): Promise<DocumentReference> {
+    const { additionalFields, ...createBinaryOptions } = createDocumentReferenceOptions;
+
+    // First, create the document reference:
+    const documentReference = await this.createResource({
+      resourceType: 'DocumentReference',
+      status: 'current',
+      content: [
+        {
+          attachment: {
+            contentType: createDocumentReferenceOptions.contentType,
+          },
+        },
+      ],
+      ...additionalFields,
+    });
+
+    // If the caller did not specify a security context, use the document reference:
+    if (!createBinaryOptions.securityContext) {
+      createBinaryOptions.securityContext = createReference(documentReference);
+    }
+
+    // Then create the binary:
+    const attachment = await this.createAttachment(createBinaryOptions, requestOptions);
+
+    // Finally, update the document reference with the binary reference:
+    return this.updateResource({
+      ...documentReference,
+      content: [{ attachment: attachment }],
+    });
   }
 
   /**
