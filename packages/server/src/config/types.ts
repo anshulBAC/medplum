@@ -189,4 +189,48 @@ export interface MedplumShardConfig {
   database: MedplumDatabaseConfig;
   readonlyDatabase?: MedplumDatabaseConfig;
   redis: MedplumRedisConfig;
+  defaultDistIdFHIRPath?: string;
+  resourceTypeToDistIdFHIRPath?: Record<string, string>;
+  shardMinValue: number;
+  shardMaxValue: number;
 }
+
+const shards: MedplumShardConfig[] = [
+  {
+    name: 'global',
+    database: {} as any,
+    readonlyDatabase: {} as any,
+    redis: {} as any,
+    defaultDistIdFHIRPath: 'meta.project',
+    resourceTypeToDistIdFHIRPath: {
+      Patient: 'patient',
+      Organization: 'organization',
+    },
+    shardMinValue: 0,
+    shardMaxValue: 2 ** 16 - 1,
+  },
+  {
+    name: 'patientCompartment1',
+    database: {} as any,
+    readonlyDatabase: {} as any,
+    redis: {} as any,
+    defaultDistIdFHIRPath: 'meta.project',
+    resourceTypeToDistIdFHIRPath: {
+      Patient: 'patient',
+    },
+    shardMinValue: 0,
+    shardMaxValue: 2 ** 15 - 1,
+  },
+  {
+    name: 'patientCompartment2',
+    database: {} as any,
+    readonlyDatabase: {} as any,
+    redis: {} as any,
+    defaultDistIdFHIRPath: 'meta.project',
+    resourceTypeToDistIdFHIRPath: {
+      Patient: 'patient',
+    },
+    shardMinValue: 2 ** 15,
+    shardMaxValue: 2 ** 16 - 1,
+  },
+];
