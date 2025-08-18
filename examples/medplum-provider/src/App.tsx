@@ -90,7 +90,9 @@ export function App(): JSX.Element | null {
           title: 'Quick Links',
           links: [
             { icon: <IconUserPlus />, label: 'New Patient', href: '/onboarding' },
-            ...(hasDoseSpot ? [{ icon: <IconPill />, label: 'DoseSpot Favorites', href: '/integrations/dosespot' }] : []),
+            ...(hasDoseSpot
+              ? [{ icon: <IconPill />, label: 'DoseSpot Favorites', href: '/integrations/dosespot' }]
+              : []),
           ],
         },
       ]}
