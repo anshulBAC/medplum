@@ -16,7 +16,6 @@ import {
   IconClipboardCheck,
   IconMail,
   IconPill,
-  IconTransformPoint,
   IconUserPlus,
   IconUsers,
 } from '@tabler/icons-react';
@@ -88,14 +87,10 @@ export function App(): JSX.Element | null {
           links: [{ icon: <IconApps />, label: 'Add Integrations', href: '/integrations' }],
         },
         {
-          title: 'Integrations',
-          links: [{ icon: <IconTransformPoint />, label: 'Integrations', href: '/integrations' }],
-        },
-        {
           title: 'Quick Links',
           links: [
             { icon: <IconUserPlus />, label: 'New Patient', href: '/onboarding' },
-            ...(hasDoseSpot ? [{ icon: <IconPill />, label: 'DoseSpot', href: '/integrations/dosespot' }] : []),
+            ...(hasDoseSpot ? [{ icon: <IconPill />, label: 'DoseSpot Favorites', href: '/integrations/dosespot' }] : []),
           ],
         },
       ]}
