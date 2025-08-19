@@ -82,7 +82,7 @@ export function AppShell(props: AppShellProps): JSX.Element {
           notifications={props.notifications}
         />
       )}
-      {profile && (
+      {profile && navbarOpen ? (
         <Navbar
           pathname={props.pathname}
           searchParams={props.searchParams}
@@ -92,7 +92,7 @@ export function AppShell(props: AppShellProps): JSX.Element {
           resourceTypeSearchDisabled={props.resourceTypeSearchDisabled}
           linkStyles={props.navbarLinkStyles}
         />
-      )}
+      ) : undefined}
       <MantineAppShell.Main className={classes.main}>
         <ErrorBoundary>
           <Suspense fallback={<Loading />}>{props.children}</Suspense>
