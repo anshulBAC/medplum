@@ -70,7 +70,13 @@ export function App(): JSX.Element | null {
       searchParams={new URLSearchParams(location.search)}
       menus={[
         {
-          links: [{ icon: <IconUsers />, label: 'Patients', href: '/Patient?_count=20&_fields=name,email,gender&_sort=-_lastUpdated' }],
+          links: [
+            {
+              icon: <IconUsers />,
+              label: 'Patients',
+              href: '/Patient?_count=20&_fields=name,email,gender&_sort=-_lastUpdated',
+            },
+          ],
         },
         {
           links: [{ icon: <IconCalendarEvent />, label: 'Schedule', href: '/schedule' }],
