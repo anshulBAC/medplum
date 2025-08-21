@@ -24,7 +24,6 @@ import { Navigate, Route, Routes, useLocation } from 'react-router';
 import { DoseSpotIcon } from './components/DoseSpotIcon';
 import { hasDoseSpotIdentifier } from './components/utils';
 import './index.css';
-import { HomePage } from './pages/HomePage';
 import { IntegrationsPage } from './pages/IntegrationsPage';
 import { SchedulePage } from './pages/SchedulePage';
 import { SearchPage } from './pages/SearchPage';
@@ -71,7 +70,7 @@ export function App(): JSX.Element | null {
       searchParams={new URLSearchParams(location.search)}
       menus={[
         {
-          links: [{ icon: <IconUsers />, label: 'Patients', href: '/' }],
+          links: [{ icon: <IconUsers />, label: 'Patients', href: '/Patient?_count=20&_fields=name,email,gender&_sort=-_lastUpdated' }],
         },
         {
           links: [{ icon: <IconCalendarEvent />, label: 'Schedule', href: '/schedule' }],
@@ -126,7 +125,11 @@ export function App(): JSX.Element | null {
         <Routes>
           {profile ? (
             <>
-              <Route path="/" element={<HomePage />} />
+              <Route
+                path="/"
+                element={<Navigate to="/Patient?_count=20&_fields=name,email,gender&_sort=-_lastUpdated" replace />}
+              />
+              <Route path="/Patient/new" element={<ResourceCreatePage />} />
               <Route path="/Patient/:patientId" element={<PatientPage />}>
                 <Route path="Encounter/new" element={<EncounterModal />} />
                 <Route path="Encounter/:encounterId" element={<EncounterChart />}>
