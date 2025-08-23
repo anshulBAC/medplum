@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
 import {
   AgentError,
   AgentMessage,
@@ -21,11 +23,12 @@ import {
 } from '@medplum/core';
 import { Agent, AgentChannel, Endpoint, Reference } from '@medplum/fhirtypes';
 import { Hl7Client } from '@medplum/hl7';
-import { ChildProcess, ExecException, ExecOptions, exec, spawn } from 'node:child_process';
+import { ChildProcess, ExecException, ExecOptionsWithStringEncoding, exec, spawn } from 'node:child_process';
 import { existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isIPv4, isIPv6 } from 'node:net';
 import { platform } from 'node:os';
 import process from 'node:process';
+import * as semver from 'semver';
 import WebSocket from 'ws';
 import { Channel, ChannelType, getChannelType, getChannelTypeShortName } from './channel';
 import { DEFAULT_PING_TIMEOUT, MAX_MISSED_HEARTBEATS, RETRY_WAIT_DURATION_MS } from './constants';
@@ -33,9 +36,13 @@ import { AgentDicomChannel } from './dicom';
 import { AgentHl7Channel } from './hl7';
 import { createPidFile, forceKillApp, isAppRunning, removePidFile, waitForPidFile } from './pid';
 import { AgentSerialChannel } from './serial';
+import { getCurrentStats } from './stats';
 import { UPGRADER_LOG_PATH, UPGRADE_MANIFEST_PATH } from './upgrader-utils';
 
-async function execAsync(command: string, options: ExecOptions): Promise<{ stdout: string; stderr: string }> {
+async function execAsync(
+  command: string,
+  options: ExecOptionsWithStringEncoding
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
     exec(command, options, (ex: ExecException | null, stdout: string, stderr: string) => {
       if (ex) {
@@ -66,6 +73,8 @@ export class App {
   private live = false;
   private shutdown = false;
   private keepAlive = false;
+  private logStatsFreqSecs = -1;
+  private logStatsTimer?: NodeJS.Timeout;
   private config: Agent | undefined;
 
   constructor(medplum: MedplumClient, agentId: string, logLevel: LogLevel) {
@@ -311,15 +320,44 @@ export class App {
   private async reloadConfig(): Promise<void> {
     const agent = await this.medplum.readResource('Agent', this.agentId, { cache: 'no-cache' });
     const keepAlive = agent?.setting?.find((setting) => setting.name === 'keepAlive')?.valueBoolean;
+    const logStatsFreqSecs = agent?.setting?.find((setting) => setting.name === 'logStatsFreqSecs')?.valueInteger;
 
+    // If keepAlive is off and we have clients currently connected, we should stop them and remove them from the clients
     if (!keepAlive && this.hl7Clients.size !== 0) {
-      for (const client of this.hl7Clients.values()) {
-        client.close();
+      const results = await Promise.allSettled(Array.from(this.hl7Clients.values()).map((client) => client.close()));
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          this.log.error(normalizeErrorString(result.reason));
+        }
       }
+      this.hl7Clients.clear();
+    }
+
+    if (this.logStatsFreqSecs !== logStatsFreqSecs && this.logStatsTimer) {
+      // Clear the interval for log stats if logStatsFreqSecs is not the same in the new config
+      clearInterval(this.logStatsTimer);
+      this.logStatsTimer = undefined;
     }
 
     this.config = agent;
     this.keepAlive = keepAlive ?? false;
+    this.logStatsFreqSecs = logStatsFreqSecs ?? -1;
+
+    if (this.logStatsFreqSecs > 0) {
+      this.logStatsTimer = setInterval(() => {
+        const stats = getCurrentStats();
+        this.log.info('Agent stats', {
+          stats: {
+            ...stats,
+            webSocketQueueDepth: this.webSocketQueue.length,
+            hl7QueueDepth: this.hl7Queue.length,
+            hl7ClientCount: this.hl7Clients.size,
+            live: this.live,
+            outstandingHeartbeats: this.outstandingHeartbeats,
+          },
+        });
+      }, this.logStatsFreqSecs * 1000);
+    }
 
     await this.hydrateListeners();
   }
@@ -473,15 +511,22 @@ export class App {
       this.heartbeatTimer = undefined;
     }
 
+    if (this.logStatsTimer) {
+      clearInterval(this.logStatsTimer);
+      this.logStatsTimer = undefined;
+    }
+
     if (this.webSocket) {
       this.webSocket.close();
       this.webSocket = undefined;
     }
 
     if (this.hl7Clients.size !== 0) {
-      for (const client of this.hl7Clients.values()) {
-        client.close();
+      const clientClosePromises = [];
+      for (const channel of this.channels.values()) {
+        clientClosePromises.push(channel.stop());
       }
+      await Promise.all(clientClosePromises);
     }
 
     const channelStopPromises = [];
@@ -680,6 +725,21 @@ export class App {
       this.log.info(`Forcing upgrade from ${MEDPLUM_VERSION} to ${targetVersion}`);
     }
 
+    // If downgrading to a pre-zero-downtime version, we should check if we are forcing first
+    // If not forcing, we should error and warn the user about the implications of downgrading to a pre-zero-downtime version
+    // Including downtime during the current downgrade (since the currently running service must stop before downgrading)
+    // And future downtime upon any future upgrades
+    if (semver.lt(targetVersion, '4.2.4') && !message.force) {
+      const errMsg = `WARNING: ${targetVersion} predates the zero-downtime upgrade feature. Downgrading to this version will 1) incur downtime during the downgrade process, as the current agent must stop itself before installing the older agent, and 2) incur downtime on any subsequent upgrade to a later version. We recommend against downgrading to this version, but if you must, reissue the command with force set to true to downgrade.`;
+      this.log.error(errMsg);
+      await this.sendToWebSocket({
+        type: 'agent:error',
+        callback: message.callback,
+        body: errMsg,
+      } satisfies AgentError);
+      return;
+    }
+
     if (upgradeInProgress && message.force) {
       // If running, just cleanup the file since it could be that the cleanup failed for whatever reason
       if (isAppRunning('medplum-upgrading-agent')) {
@@ -812,15 +872,23 @@ export class App {
       if (client.keepAlive) {
         this.hl7Clients.set(message.remote, client);
         client.addEventListener('close', () => {
-          this.hl7Clients.delete(message.remote);
+          // If the current client for this remote is this client, make sure to clean it up
+          if (this.hl7Clients.get(message.remote) === client) {
+            this.hl7Clients.delete(message.remote);
+          }
           this.log.info(`Persistent connection to remote '${message.remote}' closed`);
         });
-        client.addEventListener('error', () => {
-          this.hl7Clients.delete(message.remote);
-          this.log.info(
-            `Persistent connection to remote '${message.remote}' encountered an error... Closing connection...`
+        client.addEventListener('error', (event) => {
+          // If the current client for this remote is this client, make sure to clean it up
+          if (this.hl7Clients.get(message.remote) === client) {
+            this.hl7Clients.delete(message.remote);
+          }
+          this.log.error(
+            `Persistent connection to remote '${message.remote}' encountered error: '${normalizeErrorString(event.error)}' - Closing connection...`
           );
-          client.close();
+          client.close().catch((err) => {
+            this.log.error(normalizeErrorString(err));
+          });
         });
       }
     }
@@ -862,12 +930,16 @@ export class App {
 
         if (client.keepAlive) {
           this.hl7Clients.delete(message.remote);
-          client.close();
+          client.close().catch((err) => {
+            this.log.error(normalizeErrorString(err));
+          });
         }
       })
       .finally(() => {
         if (!client.keepAlive) {
-          client.close();
+          client.close().catch((err) => {
+            this.log.error(normalizeErrorString(err));
+          });
         }
       });
   }

@@ -1,7 +1,10 @@
-import { CloseButton, Paper, PaperProps } from '@mantine/core';
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
+import { Button, Paper, PaperProps } from '@mantine/core';
 import { createReference, HTTP_HL7_ORG, ProfileResource } from '@medplum/core';
 import { Reference, Signature } from '@medplum/fhirtypes';
 import { useMedplum } from '@medplum/react-hooks';
+import { IconTrash } from '@tabler/icons-react';
 import { JSX, useEffect, useRef } from 'react';
 import SignaturePad from 'signature_pad';
 
@@ -58,12 +61,25 @@ export function SignatureInput(props: SignatureInputProps): JSX.Element {
     if (signaturePadRef.current) {
       signaturePadRef.current.clear();
     }
+    onChangeRef.current?.(undefined);
   };
 
   return (
     <Paper withBorder p={0} w={width} h={height} pos="relative" {...rest}>
       <canvas ref={canvasRef} width={width} height={height} aria-label="Signature input area"></canvas>
-      <CloseButton onClick={clearSignature} aria-label="Clear signature" pos="absolute" top={0} right={0} />
+      <Button
+        onClick={clearSignature}
+        aria-label="Clear signature"
+        pos="absolute"
+        top={0}
+        right={0}
+        size="xs"
+        leftSection={<IconTrash size={16} />}
+        variant="subtle"
+        color="gray"
+      >
+        Clear
+      </Button>
     </Paper>
   );
 }

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
 import type * as Preset from '@docusaurus/preset-classic';
 import type { Config } from '@docusaurus/types';
 import { themes as prismThemes } from 'prism-react-renderer';
@@ -15,6 +17,13 @@ const config: Config = {
   favicon: 'favicon.ico',
   organizationName: 'medplum', // Usually your GitHub org/user name.
   projectName: 'medplum', // Usually your repo name.
+
+  // Set this to true to enable the faster experimental build mode.
+  // https://github.com/facebook/docusaurus/issues/10556
+  future: {
+    v4: true,
+    experimental_faster: true,
+  },
 
   // Even if you don't use internationalization, you can use this field to set
   // useful metadata like html lang. For example, if your site is Chinese, you
@@ -37,7 +46,6 @@ const config: Config = {
             items = items.filter((e) => !(e.type === 'doc' && e.id.endsWith('index')));
             return items;
           },
-          showLastUpdateTime: true,
         },
         blog: {
           showReadingTime: true,

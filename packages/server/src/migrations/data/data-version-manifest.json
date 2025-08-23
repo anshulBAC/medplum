@@ -61,5 +61,23 @@
   },
   "v17": {
     "serverVersion": "4.3.2"
+  },
+  "v18": {
+    "serverVersion": "4.3.4"
+  },
+  "v19": {
+    "serverVersion": "4.3.6"
+  },
+  "v20": {
+    "serverVersion": "4.3.6"
+  },
+  "v21": {
+    "serverVersion": "4.3.9"
+  },
+  "v22": {
+    "serverVersion": "4.3.11"
+  },
+  "v23": {
+    "serverVersion": "4.3.11"
   }
 }

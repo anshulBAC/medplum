@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
 import { allOk, badRequest, OperationOutcomeError, WithId } from '@medplum/core';
 import { FhirRequest, FhirResponse } from '@medplum/fhir-router';
 import {
@@ -268,6 +270,7 @@ export function expansionQuery(
     .column('id')
     .column('code')
     .column('display')
+    .column('synonymOf')
     .where('system', '=', codeSystem.id);
 
   if (include.filter?.length) {
@@ -284,6 +287,7 @@ export function expansionQuery(
               .column('id')
               .column('code')
               .column('display')
+              .column('synonymOf')
               .where(new Column('origin', 'system'), '=', codeSystem.id)
               .where(new Column('origin', 'code'), '=', new Column('Coding', 'code'));
             const ancestorQuery = findAncestor(base, codeSystem, condition.value);
@@ -292,14 +296,14 @@ export function expansionQuery(
             query = addDescendants(query, codeSystem, condition.value);
           }
           if (condition.op !== 'is-a') {
-            query.where(new Column('Coding', 'code'), '!=', condition.value);
+            query.where(new Column(query.tableName, 'code'), '!=', condition.value);
           }
           break;
         case '=':
-          query = addPropertyFilter(query, condition.property, '=', condition.value);
+          query = addPropertyFilter(query, condition.property, '=', condition.value, codeSystem);
           break;
         case 'in':
-          query = addPropertyFilter(query, condition.property, 'IN', condition.value.split(','));
+          query = addPropertyFilter(query, condition.property, 'IN', condition.value.split(','), codeSystem);
           break;
         default:
           getLogger().warn('Unknown filter type in ValueSet', { filter: condition });

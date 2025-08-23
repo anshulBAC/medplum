@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
 import { OperationOutcomeError, WithId, allOk, badRequest } from '@medplum/core';
 import { FhirRequest, FhirResponse } from '@medplum/fhir-router';
 import {
@@ -124,10 +126,10 @@ async function satisfies(
 
   switch (filter.op) {
     case '=':
-      query = addPropertyFilter(query, filter.property, '=', filter.value);
+      query = addPropertyFilter(query, filter.property, '=', filter.value, codeSystem);
       break;
     case 'in':
-      query = addPropertyFilter(query, filter.property, 'IN', filter.value.split(','));
+      query = addPropertyFilter(query, filter.property, 'IN', filter.value.split(','), codeSystem);
       break;
     case 'is-a':
     case 'descendent-of':

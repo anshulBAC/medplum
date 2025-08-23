@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
 import { OperationOutcomeError, append, conflict, normalizeOperationOutcome, serverTimeout } from '@medplum/core';
 import { Period } from '@medplum/fhirtypes';
 import { Client, Pool, PoolClient } from 'pg';
@@ -552,6 +554,13 @@ export class SqlBuilder {
   }
 }
 
+export const PostgresError = {
+  UniqueViolation: '23505',
+  SerializationFailure: '40001',
+  QueryCanceled: '57014',
+  InFailedSqlTransaction: '25P02',
+} as const;
+
 export function normalizeDatabaseError(err: any): OperationOutcomeError {
   if (err instanceof OperationOutcomeError) {
     // Pass through already-normalized errors
@@ -561,18 +570,18 @@ export function normalizeDatabaseError(err: any): OperationOutcomeError {
   // Handle known Postgres error codes
   // @see https://www.postgresql.org/docs/16/errcodes-appendix.html
   switch (err?.code) {
-    case '23505': // unique_violation
+    case PostgresError.UniqueViolation:
       // Duplicate key error -> 409 Conflict
       // @see https://github.com/brianc/node-postgres/issues/1602
       return new OperationOutcomeError(conflict(err.detail), err);
-    case '40001': // serialization_failure
+    case PostgresError.SerializationFailure:
       // Transaction rollback due to serialization error -> 409 Conflict
       return new OperationOutcomeError(conflict(err.message, err.code), err);
-    case '57014': // query_canceled
+    case PostgresError.QueryCanceled:
       // Statement timeout -> 504 Gateway Timeout
       getLogger().warn('Database statement timeout', { error: err.message, stack: err.stack, code: err.code });
       return new OperationOutcomeError(serverTimeout(err.message), err);
-    case '25P02': // in_failed_sql_transaction
+    case PostgresError.InFailedSqlTransaction:
       getLogger().warn('Statement in failed transaction', { stack: err.stack });
       return new OperationOutcomeError(normalizeOperationOutcome(err), err);
   }
@@ -658,6 +667,13 @@ export class SelectQuery extends BaseQuery implements Expression {
 
   column(column: Column | string): this {
     this.columns.push(getColumn(column, this.tableName));
+    return this;
+  }
+
+  addColumns(columns: Column[]): this {
+    for (const col of columns) {
+      this.columns.push(new Column(this.tableName, col.columnName));
+    }
     return this;
   }
 
@@ -863,6 +879,7 @@ export class InsertQuery extends BaseQuery {
   private readonly query?: SelectQuery;
   private returnColumns?: string[];
   private conflictColumns?: string[];
+  private conflictCondition?: Condition;
   private ignoreConflict?: boolean;
 
   constructor(tableName: string, values: Record<string, any>[] | SelectQuery) {
@@ -874,8 +891,11 @@ export class InsertQuery extends BaseQuery {
     }
   }
 
-  mergeOnConflict(columns?: string[]): this {
+  mergeOnConflict(columns?: string[], where?: Condition): this {
     this.conflictColumns = columns ?? ['id'];
+    if (where) {
+      this.conflictCondition = where;
+    }
     return this;
   }
 
@@ -964,7 +984,14 @@ export class InsertQuery extends BaseQuery {
       return;
     }
 
-    sql.append(` ON CONFLICT (${this.conflictColumns.map((c) => '"' + c + '"').join(', ')}) DO UPDATE SET `);
+    sql.append(` ON CONFLICT (`);
+    sql.append(this.conflictColumns.map((c) => '"' + c + '"').join(', '));
+    sql.append(`)`);
+    if (this.conflictCondition) {
+      sql.append(' WHERE ');
+      sql.appendExpression(this.conflictCondition);
+    }
+    sql.append(` DO UPDATE SET `);
 
     const columns = Object.keys(this.values[0]);
     let first = true;

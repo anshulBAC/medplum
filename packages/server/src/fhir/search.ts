@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
 import {
   AccessPolicyInteraction,
   badRequest,
@@ -311,7 +313,20 @@ async function getSearchEntries<T extends Resource>(
 ): Promise<{ entry: BundleEntry<WithId<T>>[]; rowCount: number; nextResource?: T }> {
   const rows = await builder.execute(repo.getDatabaseClient(DatabaseMode.READER));
   const rowCount = rows.length;
-  const resources = rows.map((row) => JSON.parse(row.content)) as WithId<T>[];
+  const resources = [];
+  for (const row of rows) {
+    if (row.content) {
+      resources.push(JSON.parse(row.content));
+    } else {
+      // Handle missing content
+      // In the original implementation of deleted resources, the content was not stored in the database.
+      resources.push({
+        resourceType: searchRequest.resourceType,
+        id: row.id,
+        meta: { lastUpdated: row.lastUpdated?.toISOString() },
+      } as WithId<T>);
+    }
+  }
   let nextResource: T | undefined;
   if (resources.length > searchRequest.count) {
     nextResource = resources.pop();
@@ -393,7 +408,9 @@ function getBaseSelectQueryForResourceType(
       new Disjunction([new Condition(col, '<=', opts.maxResourceVersion), new Condition(col, '=', null)])
     );
   }
-  repo.addDeletedFilter(builder);
+  if (!searchRequest.filters?.some((f) => f.code === '_deleted')) {
+    repo.addDeletedFilter(builder);
+  }
   repo.addSecurityFilters(builder, resourceType);
   addSearchFilters(repo, builder, resourceType, searchRequest);
   if (opts?.resourceTypeQueryCallback) {
@@ -1067,6 +1084,18 @@ function trySpecialSearchParameter(
         },
         filter
       );
+    case '_deleted':
+      return buildBooleanSearchFilter(
+        table,
+        {
+          type: SearchParameterType.BOOLEAN,
+          columnName: 'deleted',
+          searchStrategy: 'column',
+          parsedExpression: parseFhirPath('deleted'),
+        },
+        filter.operator,
+        filter.value
+      );
     case '_compartment':
     case '_project': {
       if (filter.code === '_project') {
@@ -1303,17 +1332,43 @@ function buildReferenceEqualsCondition(
 }
 
 /**
+ * From the dateTime regex on {@link https://hl7.org/fhir/R4/datatypes.html#primitive}, but with:
+ * - year and month required
+ * - seconds optional when minutes specified for backwards compatibility, e.g. 1985-11-30T05:05Z
+ * - A space is allowed instead of a T as the date/time separator
+ */
+const supportedDateRegex =
+  /^(\d(\d(\d[1-9]|[1-9]0)|[1-9]00)|[1-9]000)-(0[1-9]|1[0-2])-(0[1-9]|[1-2]\d|3[0-1])([T ]([01]\d|2[0-3])(:[0-5]\d(:([0-5]\d|60))?(\.\d{1,9})?)?)?(Z|[+-]((0\d|1[0-3]):[0-5]\d|14:00)?)?$/;
+
+/**
+ * Perform validation on date or dateTime values to ensure compatibility with Postgres timestamp parsing.
+ * Throws a badRequest OperationOutcomeError if the value is invalid.
+ * @param value - The date or dateTime value to validate.
+ */
+function validateDateValue(value: string): void {
+  if (!supportedDateRegex.test(value)) {
+    throw new OperationOutcomeError(badRequest(`Invalid date value: ${value}`));
+  }
+
+  const dateValue = new Date(value);
+  if (isNaN(dateValue.getTime())) {
+    throw new OperationOutcomeError(badRequest(`Invalid date value: ${value}`));
+  }
+}
+
+/**
  * Adds a date or date/time search filter.
  * @param table - The resource table name.
  * @param impl - The search parameter implementation info.
  * @param filter - The search filter.
  * @returns The select query condition.
  */
-function buildDateSearchFilter(table: string, impl: ColumnSearchParameterImplementation, filter: Filter): Expression {
-  const dateValue = new Date(filter.value);
-  if (isNaN(dateValue.getTime())) {
-    throw new OperationOutcomeError(badRequest(`Invalid date value: ${filter.value}`));
-  }
+export function buildDateSearchFilter(
+  table: string,
+  impl: ColumnSearchParameterImplementation,
+  filter: Filter
+): Expression {
+  validateDateValue(filter.value);
 
   if (table === 'MeasureReport' && impl.columnName === 'period') {
     // Handle special case for "MeasureReport.period"

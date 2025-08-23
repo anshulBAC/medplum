@@ -1,8 +1,11 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
 import { SEARCH_PARAMETER_BUNDLE_FILES, readJson } from '@medplum/definitions';
 import {
   ActivityDefinition,
   Bundle,
   DiagnosticReport,
+  Location,
   Observation,
   Patient,
   Practitioner,
@@ -13,7 +16,7 @@ import {
 } from '@medplum/fhirtypes';
 import { indexSearchParameterBundle } from '../types';
 import { indexStructureDefinitionBundle } from '../typeschema/types';
-import { matchesSearchRequest, matchesStringValue } from './match';
+import { matchesSearchRequest } from './match';
 import { Operator, SearchRequest, parseSearchRequest } from './search';
 
 // Dimensions:
@@ -839,7 +842,12 @@ describe('Search matching', () => {
         resourceType: 'Task',
         status: 'accepted',
         intent: 'order',
-        restriction: { period: { start: '2025-05-15T12:00:00.000Z' } },
+        restriction: {
+          period: {
+            start: '2025-05-15T12:00:00.000Z',
+            end: '2025-05-15T13:00:00.000Z',
+          },
+        },
       };
 
       test('true', () => {
@@ -1009,67 +1017,113 @@ describe('Search matching', () => {
     expect(matchesSearchRequest(resource, search2)).toBe(false);
   });
 
-  describe('Utils', () => {
-    describe('matchesStringValue', () => {
-      const token = 'http://example.com/mrn|12345';
-      const systemToken = 'http://example.com/mrn|';
+  test('Meta.tag', () => {
+    // This test demonstrates the bug where partial matching is incorrectly allowed
+    // for meta.tag searches when only exact matches should be permitted
+    const resource: Patient = {
+      resourceType: 'Patient',
+      meta: {
+        tag: [
+          {
+            system: 'http://example.com/tags',
+            code: 'SENSITIVE',
+            display: 'Sensitive Patient Data',
+          },
+          {
+            system: 'http://example.com/tags',
+            code: 'VIP',
+            display: 'VIP Patient',
+          },
+          {
+            code: 'EMERGENCY', // tag without system
+          },
+        ],
+      },
+    };
 
-      it('matches exact and substring (case-insensitive)', () => {
-        expect(matchesStringValue('Foo Bar', 'bar')).toBe(true);
-        expect(matchesStringValue('FOO', 'foo')).toBe(true);
-        expect(matchesStringValue('foo', 'bar')).toBe(false);
-      });
+    // Should match exact code
+    expect(
+      matchesSearchRequest(resource, {
+        resourceType: 'Patient',
+        filters: [{ code: '_tag', operator: Operator.EQUALS, value: 'SENSITIVE' }],
+      })
+    ).toBe(true);
 
-      it('matches token substring when asToken is false', () => {
-        expect(matchesStringValue(token, 'example', false)).toBe(true);
-        expect(matchesStringValue(token, '1234', false)).toBe(true);
-        expect(matchesStringValue(token, '5678', false)).toBe(false);
-      });
+    // Should match exact system|code
+    expect(
+      matchesSearchRequest(resource, {
+        resourceType: 'Patient',
+        filters: [{ code: '_tag', operator: Operator.EQUALS, value: 'http://example.com/tags|SENSITIVE' }],
+      })
+    ).toBe(true);
 
-      it('does not match when value is empty', () => {
-        expect(matchesStringValue('foo', '', false)).toBe(false);
-        expect(matchesStringValue(token, '', false)).toBe(false);
-      });
+    // Should match system only (system|)
+    expect(
+      matchesSearchRequest(resource, {
+        resourceType: 'Patient',
+        filters: [{ code: '_tag', operator: Operator.EQUALS, value: 'http://example.com/tags|' }],
+      })
+    ).toBe(true);
 
-      it('matches exact and substring for object types', () => {
-        expect(matchesStringValue({ foo: 'bar' }, 'foo', false)).toBe(true);
-        expect(matchesStringValue({ foo: 'bar' }, 'bar', false)).toBe(true);
-        expect(matchesStringValue({ foo: 'bar' }, '123', false)).toBe(false);
-      });
+    // CURRENT BUG: This currently matches due to partial matching (SENS is substring of SENSITIVE)
+    // but should NOT match - only exact matches should be allowed for token searches
+    expect(
+      matchesSearchRequest(resource, {
+        resourceType: 'Patient',
+        filters: [{ code: '_tag', operator: Operator.EQUALS, value: 'SENS' }],
+      })
+    ).toBe(false); // This test will currently FAIL due to the bug
 
-      describe('asToken = true', () => {
-        it('matches exact and substring when found in system portion', () => {
-          expect(matchesStringValue(token, 'example', true)).toBe(true);
-          expect(matchesStringValue(token, 'http://example.com', true)).toBe(true);
-          expect(matchesStringValue(token, 'http://example.com/mrn', true)).toBe(true);
-          expect(matchesStringValue(token, 'mrn', true)).toBe(true);
-        });
+    // CURRENT BUG: This currently matches due to partial matching
+    // but should NOT match - only exact matches should be allowed
+    expect(
+      matchesSearchRequest(resource, {
+        resourceType: 'Patient',
+        filters: [{ code: '_tag', operator: Operator.EQUALS, value: 'PATIENT' }],
+      })
+    ).toBe(false); // This test will currently FAIL due to the bug
 
-        it('matches exact and substring when found in code portion', () => {
-          expect(matchesStringValue(token, '123', true)).toBe(true);
-          expect(matchesStringValue(token, '12345', true)).toBe(true);
-        });
+    // Should NOT match different exact code
+    expect(
+      matchesSearchRequest(resource, {
+        resourceType: 'Patient',
+        filters: [{ code: '_tag', operator: Operator.EQUALS, value: 'RESTRICTED' }],
+      })
+    ).toBe(false);
 
-        it('matches when value is found in both system and code', () => {
-          expect(matchesStringValue('http://12345.org|12345', '12345', true)).toBe(true);
-        });
+    // Should NOT match wrong system
+    expect(
+      matchesSearchRequest(resource, {
+        resourceType: 'Patient',
+        filters: [{ code: '_tag', operator: Operator.EQUALS, value: 'http://other.com/tags|SENSITIVE' }],
+      })
+    ).toBe(false);
 
-        it('does not match if neither system or code', () => {
-          expect(matchesStringValue(token, 'foo', true)).toBe(false);
-          expect(matchesStringValue(token, '456', true)).toBe(false);
-        });
+    // NOT_EQUALS tests
+    expect(
+      matchesSearchRequest(resource, {
+        resourceType: 'Patient',
+        filters: [{ code: '_tag', operator: Operator.NOT_EQUALS, value: 'SENSITIVE' }],
+      })
+    ).toBe(false);
 
-        it('handles tokens with no code portion', () => {
-          expect(matchesStringValue(systemToken, 'example', true)).toBe(true);
-          expect(matchesStringValue(systemToken, 'http://example.com/mrn', true)).toBe(true);
-          expect(matchesStringValue(systemToken, '1234', true)).toBe(false);
-        });
+    expect(
+      matchesSearchRequest(resource, {
+        resourceType: 'Patient',
+        filters: [{ code: '_tag', operator: Operator.NOT_EQUALS, value: 'RESTRICTED' }],
+      })
+    ).toBe(true);
+  });
 
-        it('handles tokens with empty string', () => {
-          expect(matchesStringValue(token, '', true)).toBe(false);
-          expect(matchesStringValue(systemToken, '', true)).toBe(false);
-        });
-      });
-    });
+  test('Special not implemented', () => {
+    const resource: Location = {
+      resourceType: 'Location',
+    };
+
+    const search1: SearchRequest = {
+      resourceType: 'Location',
+      filters: [{ code: 'near', operator: Operator.EQUALS, value: 'foo' }],
+    };
+    expect(matchesSearchRequest(resource, search1)).toBe(false);
   });
 });

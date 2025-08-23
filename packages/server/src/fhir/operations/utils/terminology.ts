@@ -1,8 +1,19 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
 import { OperationOutcomeError, Operator, WithId, badRequest, createReference, resolveId } from '@medplum/core';
 import { CodeSystem, CodeSystemProperty, ConceptMap, Reference, ValueSet } from '@medplum/fhirtypes';
 import { getAuthenticatedContext } from '../../../context';
 import { getSystemRepo } from '../../repo';
-import { Column, Condition, Conjunction, SelectQuery, SqlFunction, Operator as SqlOperator, Union } from '../../sql';
+import {
+  Column,
+  Condition,
+  Conjunction,
+  Disjunction,
+  SelectQuery,
+  SqlFunction,
+  Operator as SqlOperator,
+  Union,
+} from '../../sql';
 
 export const parentProperty = 'http://hl7.org/fhir/concept-properties#parent';
 export const childProperty = 'http://hl7.org/fhir/concept-properties#child';
@@ -85,16 +96,18 @@ export function selectCoding(systemId: string, ...code: string[]): SelectQuery {
     .column('id')
     .column('code')
     .column('display')
+    .column('synonymOf')
     .where('system', '=', systemId)
     .where('code', 'IN', code)
-    .where('isSynonym', '=', false);
+    .where('synonymOf', '=', null);
 }
 
 export function addPropertyFilter(
   query: SelectQuery,
   property: string,
   operator: keyof typeof SqlOperator,
-  value: string | string[]
+  value: string | string[],
+  codeSystem: CodeSystem
 ): SelectQuery {
   const propertyQuery = new SelectQuery('Coding_Property').whereExpr(
     new Conjunction([
@@ -111,6 +124,7 @@ export function addPropertyFilter(
     new Conjunction([
       new Condition(new Column(csPropertyTable, 'id'), '=', new Column(propertyQuery.tableName, 'property')),
       new Condition(new Column(csPropertyTable, 'code'), '=', property),
+      new Condition(new Column(csPropertyTable, 'system'), '=', codeSystem.id),
     ])
   );
 
@@ -121,11 +135,7 @@ export function addPropertyFilter(
 export function findAncestor(base: SelectQuery, codeSystem: CodeSystem, ancestorCode: string): SelectQuery {
   const property = getParentProperty(codeSystem);
 
-  const query = new SelectQuery('Coding')
-    .column('id')
-    .column('code')
-    .column('display')
-    .where('system', '=', codeSystem.id);
+  const query = new SelectQuery('Coding').addColumns(base.columns).where('system', '=', codeSystem.id);
   const propertyTable = query.getNextJoinAlias();
   query.join(
     'INNER JOIN',
@@ -151,12 +161,14 @@ export function findAncestor(base: SelectQuery, codeSystem: CodeSystem, ancestor
     'INNER JOIN',
     recursiveCTE,
     recursiveTable,
-    new Condition(new Column(propertyTable, 'coding'), '=', new Column(recursiveTable, 'id'))
+    new Disjunction([
+      new Condition(new Column(propertyTable, 'coding'), '=', new Column(recursiveTable, 'id')),
+      new Condition(new Column(propertyTable, 'coding'), '=', new Column(recursiveTable, 'synonymOf')),
+    ])
   );
 
   return new SelectQuery(recursiveCTE)
-    .column('code')
-    .column('display')
+    .addColumns(base.columns)
     .withRecursive(recursiveCTE, new Union(base, query))
     .where('code', '=', ancestorCode)
     .limit(1);
@@ -190,6 +202,7 @@ export function addDescendants(query: SelectQuery, codeSystem: CodeSystem, paren
     .column('id')
     .column('code')
     .column('display')
+    .column('synonymOf')
     .where('system', '=', codeSystem.id)
     .where('code', '=', parentCode);
 
@@ -230,11 +243,9 @@ export function addDescendants(query: SelectQuery, codeSystem: CodeSystem, paren
   const offset = query.offset_;
   query.offset(0);
 
-  return new SelectQuery('cte_descendants')
-    .column('id')
-    .column('code')
-    .column('display')
-    .withRecursive('cte_descendants', new Union(base, query))
+  return new SelectQuery(recursiveCTE)
+    .addColumns(base.columns)
+    .withRecursive(recursiveCTE, new Union(base, query))
     .limit(limit)
     .offset(offset);
 }

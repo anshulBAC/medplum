@@ -1,15 +1,26 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
 import { getAllQuestionnaireAnswers, getQuestionnaireAnswers } from '@medplum/core';
 import { Extension, Questionnaire, QuestionnaireResponse } from '@medplum/fhirtypes';
 import { MockClient } from '@medplum/mock';
-import { MedplumProvider } from '@medplum/react-hooks';
+import { MedplumProvider, QUESTIONNAIRE_SIGNATURE_REQUIRED_URL, QuestionnaireItemType } from '@medplum/react-hooks';
 import { randomUUID } from 'crypto';
 import each from 'jest-each';
 import { MemoryRouter } from 'react-router';
 import { act, fireEvent, render, screen } from '../test-utils/render';
-import { QuestionnaireItemType } from '../utils/questionnaire';
 import { QuestionnaireForm, QuestionnaireFormProps } from './QuestionnaireForm';
 
 const medplum = new MockClient();
+
+jest.mock('signature_pad', () => {
+  return jest.fn().mockImplementation(() => ({
+    fromDataURL: jest.fn().mockResolvedValue(undefined),
+    clear: jest.fn(),
+    addEventListener: jest.fn(),
+    removeEventListener: jest.fn(),
+    toDataURL: jest.fn(() => 'data:image/png;base64,signature-data'),
+  }));
+});
 
 const pageExtension: Extension[] = [
   {
@@ -79,6 +90,7 @@ describe('QuestionnaireForm', () => {
   });
 
   test('Groups', async () => {
+    const onChange = jest.fn();
     const onSubmit = jest.fn();
 
     await setup({
@@ -127,6 +139,7 @@ describe('QuestionnaireForm', () => {
           },
         ],
       },
+      onChange,
       onSubmit,
     });
 
@@ -134,9 +147,11 @@ describe('QuestionnaireForm', () => {
     expect(screen.getByText('Group 1')).toBeDefined();
     expect(screen.getByText('Group 2')).toBeDefined();
 
+    onChange.mockClear();
     await act(async () => {
       fireEvent.change(screen.getByLabelText('Question 1'), { target: { value: 'a1' } });
     });
+    expect(onChange).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       fireEvent.change(screen.getByLabelText('Question 2'), { target: { value: 'a2' } });
@@ -2465,7 +2480,7 @@ describe('QuestionnaireForm', () => {
     const response3 = onSubmit.mock.calls[2][0];
     const answers3 = getQuestionnaireAnswers(response3);
 
-    expect(answers3['q1']).toMatchObject({ valueString: undefined });
+    expect(answers3['q1']).toBeUndefined();
     expect(answers3['q2']).toMatchObject({ valueBoolean: false });
   });
 
@@ -2941,5 +2956,80 @@ describe('QuestionnaireForm', () => {
     expect(onSubmit).toHaveBeenCalled();
     const response = onSubmit.mock.calls[0][0];
     expect(response.item[0].answer[0].valueBoolean).toBe(true);
+  });
+
+  describe('Signature validation', () => {
+    const signatureRequiredQuestionnaire: Questionnaire = {
+      resourceType: 'Questionnaire',
+      status: 'active',
+      extension: [
+        {
+          url: QUESTIONNAIRE_SIGNATURE_REQUIRED_URL,
+          valueCodeableConcept: {
+            coding: [
+              {
+                system: 'urn:iso-astm:E1762-95:2013',
+                code: '1.2.840.10065.1.12.1.1',
+                display: "Author's Signature",
+              },
+            ],
+          },
+        },
+      ],
+      item: [
+        {
+          linkId: 'question1',
+          text: 'Question 1',
+          type: 'string',
+        },
+      ],
+    };
+
+    test('Renders signature input when signature is required', async () => {
+      await setup({
+        questionnaire: signatureRequiredQuestionnaire,
+        onSubmit: jest.fn(),
+      });
+
+      expect(screen.getByLabelText('Signature input area')).toBeInTheDocument();
+      expect(screen.queryByText('Signature is required.')).not.toBeInTheDocument();
+    });
+
+    test('Does not render signature input when signature is not required', async () => {
+      await setup({
+        questionnaire: {
+          resourceType: 'Questionnaire',
+          status: 'active',
+          item: [
+            {
+              linkId: 'question1',
+              text: 'Question 1',
+              type: 'string',
+            },
+          ],
+        },
+        onSubmit: jest.fn(),
+      });
+
+      expect(screen.queryByLabelText('Signature input area')).not.toBeInTheDocument();
+    });
+
+    test('Shows error message when submit is attempted without signature', async () => {
+      const onSubmit = jest.fn();
+
+      await setup({
+        questionnaire: signatureRequiredQuestionnaire,
+        onSubmit,
+      });
+
+      expect(screen.queryByText('Signature is required.')).not.toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByText('Submit'));
+      });
+
+      expect(screen.getByText('Signature is required.')).toBeInTheDocument();
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
   });
 });

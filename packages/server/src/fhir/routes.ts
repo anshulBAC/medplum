@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
 import { allOk, ContentType, isNotFound, isOk, OperationOutcomeError, stringify } from '@medplum/core';
 import { BatchEvent, FhirRequest, FhirRouter, HttpMethod } from '@medplum/fhir-router';
 import { ResourceType } from '@medplum/fhirtypes';
@@ -40,15 +42,16 @@ import { getWsBindingTokenHandler } from './operations/getwsbindingtoken';
 import { groupExportHandler } from './operations/groupexport';
 import { appLaunchHandler } from './operations/launch';
 import { patientEverythingHandler } from './operations/patienteverything';
-import { patientSetAccountsHandler } from './operations/patientsetaccounts';
 import { patientSummaryHandler } from './operations/patientsummary';
 import { planDefinitionApplyHandler } from './operations/plandefinitionapply';
 import { projectCloneHandler } from './operations/projectclone';
 import { projectInitHandler } from './operations/projectinit';
 import { resourceGraphHandler } from './operations/resourcegraph';
 import { rotateSecretHandler } from './operations/rotatesecret';
+import { setAccountsHandler } from './operations/set-accounts';
 import { structureDefinitionExpandProfileHandler } from './operations/structuredefinitionexpandprofile';
 import { codeSystemSubsumesOperation } from './operations/subsumes';
+import { updateUserEmailOperation } from './operations/update-user-email';
 import { valueSetValidateOperation } from './operations/valuesetvalidatecode';
 import { sendOutcome } from './outcomes';
 import { ResendSubscriptionsOptions } from './repo';
@@ -200,6 +203,9 @@ function initInternalFhirRouter(): FhirRouter {
   // Project $init
   router.add('POST', '/Project/$init', projectInitHandler);
 
+  // Update User email
+  router.add('POST', '/User/:id/$update-email', updateUserEmailOperation);
+
   // ConceptMap $translate
   router.add('POST', '/ConceptMap/$translate', conceptMapTranslateHandler);
   router.add('POST', '/ConceptMap/:id/$translate', conceptMapTranslateHandler);
@@ -279,6 +285,9 @@ function initInternalFhirRouter(): FhirRouter {
   // Resource $graph operation
   router.add('GET', '/:resourceType/:id/$graph', resourceGraphHandler);
 
+  // Resource $set-accounts operation
+  router.add('POST', '/:resourceType/:id/$set-accounts', setAccountsHandler);
+
   // Patient $everything operation
   router.add('GET', '/Patient/:id/$everything', patientEverythingHandler);
   router.add('POST', '/Patient/:id/$everything', patientEverythingHandler);
@@ -286,9 +295,6 @@ function initInternalFhirRouter(): FhirRouter {
   // Patient $summary operation
   router.add('GET', '/Patient/:id/$summary', patientSummaryHandler);
   router.add('POST', '/Patient/:id/$summary', patientSummaryHandler);
-
-  // Patient $set-accounts operation
-  router.add('POST', '/Patient/:id/$set-accounts', patientSetAccountsHandler);
 
   // Patient $ccda-export operation
   router.add('GET', '/Patient/:id/$ccda-export', ccdaExportHandler);
@@ -349,21 +355,18 @@ function initInternalFhirRouter(): FhirRouter {
   router.addEventListener('batch', (event: any) => {
     const ctx = getAuthenticatedContext();
     const projectId = ctx.project.id;
-
     const { count, errors, size, bundleType } = event as BatchEvent;
-    const batchMetricOptions = { attributes: { bundleType, projectId } };
-    if (count !== undefined) {
-      recordHistogramValue('medplum.batch.entries', count, batchMetricOptions);
-    }
-    if (errors !== undefined) {
-      recordHistogramValue('medplum.batch.errors', errors, batchMetricOptions);
 
-      if (errors > 0 && bundleType === 'transaction') {
-        ctx.logger.warn('Error processing transaction Bundle', { count, errors, size, project: projectId });
-      }
+    const metricOpts = { attributes: { bundleType, projectId } };
+    if (count !== undefined) {
+      recordHistogramValue('medplum.batch.entries', count, metricOpts);
+    }
+    if (errors?.length) {
+      recordHistogramValue('medplum.batch.errors', errors.length, metricOpts);
+      ctx.logger.warn('Error processing batch', { bundleType, count, errors, size, project: projectId });
     }
     if (size !== undefined) {
-      recordHistogramValue('medplum.batch.size', size, batchMetricOptions);
+      recordHistogramValue('medplum.batch.size', size, metricOpts);
     }
   });
 

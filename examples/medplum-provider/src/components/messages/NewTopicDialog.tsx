@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright Orangebot, Inc. and Medplum contributors
+// SPDX-License-Identifier: Apache-2.0
 import { Button, Modal, Stack, Text, TextInput } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
 import { createReference, ProfileResource } from '@medplum/core';
@@ -55,8 +57,8 @@ export const NewTopicDialog = (props: NewTopicDialogProps): JSX.Element => {
     };
 
     try {
-      await medplum.createResource(communication);
-      onSubmit?.(communication);
+      const createdCommunication = await medplum.createResource(communication);
+      onSubmit?.(createdCommunication);
       onClose();
     } catch (error) {
       showErrorNotification(error);
