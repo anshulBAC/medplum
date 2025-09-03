@@ -199,8 +199,20 @@ export abstract class LookupTable {
     const columnName = this.getColumnName(sortRule.code);
     const joinOnExpression = new Condition(new Column(resourceType, 'id'), '=', new Column(joinName, 'resourceId'));
     selectQuery.join(
-      'LEFT JOIN',
-      new SelectQuery(lookupTableName).distinctOn('resourceId').column('resourceId').column(columnName),
+      'LEFT JOIN LATERAL',
+      new SelectQuery(lookupTableName)
+        .column('resourceId')
+        .column(columnName)
+        .whereExpr(
+          new Condition(
+            new Column(selectQuery.effectiveTableName, 'id'),
+            '=',
+            new Column(lookupTableName, 'resourceId')
+          )
+        )
+        // Always sort ascending to ensure consistent results where NULLs are last
+        .orderBy(new Column(lookupTableName, columnName))
+        .limit(1),
       joinName,
       joinOnExpression
     );
